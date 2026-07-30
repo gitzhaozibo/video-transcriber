@@ -1,0 +1,11 @@
+services:
+  ffmpeg-worker:
+    image: linuxserver/ffmpeg:latest
+    container_name: ffmpeg-worker
+    entrypoint: ["sh", "-c", "sleep infinity"]
+    volumes:
+      - ./shared:/work
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
