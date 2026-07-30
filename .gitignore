@@ -1,0 +1,47 @@
+# Uploaded/processed files (keep directory structure, ignore contents)
+shared/*
+!shared/fonts/
+shared/fonts/*
+!shared/fonts/.gitkeep
+
+# Logs (keep directory structure, ignore contents)
+logs/*
+!logs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Whisper / HuggingFace model cache
+~/.cache/huggingface/
+~/.cache/whisper/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
