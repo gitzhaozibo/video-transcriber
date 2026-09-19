@@ -1,11 +1,39 @@
 services:
   ffmpeg-worker:
-    image: linuxserver/ffmpeg:latest
+    image: jrottenberg/ffmpeg:7.1-ubuntu
     container_name: ffmpeg-worker
+    # Keep the container resident so Streamlit can exec ffmpeg/ffprobe and
+    # docker-cp files in and out at any time.
     entrypoint: ["sh", "-c", "sleep infinity"]
     volumes:
-      - ./shared:/work
+      # Only fonts are shared with the host; job files are transferred via
+      # `docker cp` into per-job temp directories inside the container.
+      - ./shared/fonts:/fonts:ro
+    restart: unless-stopped
+    # Allow several concurrent ffmpeg/ffprobe exec sessions.
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  db:
+    image: postgres:16-alpine
+    container_name: video-transcriber-db
     restart: unless-stopped
     environment:
-      - PUID=1000
-      - PGID=1000
+      POSTGRES_USER: vt_user
+      POSTGRES_PASSWORD: vt_pass
+      POSTGRES_DB: video_transcriber
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vt_user -d video_transcriber"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  db_data:
