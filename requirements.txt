@@ -1,5 +1,8 @@
 streamlit>=1.32.0
 docker>=7.0.0
 faster-whisper>=1.0.0
+openai>=1.30.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.9
 pytest>=8.0.0
 pytest-mock>=3.12.0

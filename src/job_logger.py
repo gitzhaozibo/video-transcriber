@@ -1,7 +1,11 @@
-"""JSON Lines structured logger with daily rotation.
+"""JSON Lines structured logger with daily rotation + PostgreSQL history.
 
 Every log record includes a job ID so that all steps of a single transcription
-job can be correlated even if multiple jobs run concurrently.
+job can be correlated even if multiple jobs run concurrently.  In addition to
+the JSON Lines file, every event is mirrored to the PostgreSQL
+``step_events`` table (via :mod:`src.db`) so it is possible to see exactly
+where a job is hanging.  When the database is unavailable the file log keeps
+working on its own.
 
 Usage example::
 
@@ -59,9 +63,12 @@ def _ensure_handler() -> None:
 
 STEPS = frozenset({
     "upload",
-    "extract_audio",
+    "copy_to_container",
     "probe_duration",
+    "extract_audio",
+    "copy_from_container",
     "transcribe",
+    "translate",
     "burn_subtitles",
     "cleanup",
 })
@@ -183,6 +190,30 @@ class JobLogger:
             self._logger.error(message)
         else:
             self._logger.info(message)
+
+        # Mirror the event to PostgreSQL so hangs can be pinpointed from SQL.
+        # Failures are swallowed inside src.db (JSONL remains authoritative).
+        from src import db
+
+        if success is None:
+            db.create_job(self._job_id, filename=filename)
+            db.update_job(self._job_id, status="running", current_step=step)
+        elif success is True:
+            db.update_job(self._job_id, status="running", current_step=step)
+        else:
+            db.update_job(
+                self._job_id, status="failed", current_step=step, error=error
+            )
+        db.log_step(
+            self._job_id,
+            step,
+            "running" if success is None else ("success" if success else "failure"),
+            filename=filename,
+            video_duration=video_duration,
+            elapsed=elapsed,
+            error=error,
+            detail=json.dumps(extra, ensure_ascii=False) if extra else None,
+        )
 
 
 # ---------------------------------------------------------------------------
