@@ -19,6 +19,7 @@ Usage example::
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import logging.handlers
@@ -87,6 +88,11 @@ class JobLogger:
         _ensure_handler()
         self._job_id = job_id
         self._logger = logging.getLogger("video_transcriber")
+        # Import src.db via importlib so tests can swap/patch the module.
+        try:
+            self._db = importlib.import_module("src.db")
+        except Exception:  # pragma: no cover - defensive
+            self._db = None
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -193,27 +199,27 @@ class JobLogger:
 
         # Mirror the event to PostgreSQL so hangs can be pinpointed from SQL.
         # Failures are swallowed inside src.db (JSONL remains authoritative).
-        from src import db
-
-        if success is None:
-            db.create_job(self._job_id, filename=filename)
-            db.update_job(self._job_id, status="running", current_step=step)
-        elif success is True:
-            db.update_job(self._job_id, status="running", current_step=step)
-        else:
-            db.update_job(
-                self._job_id, status="failed", current_step=step, error=error
+        db = self._db
+        if db is not None:
+            if success is None:
+                db.create_job(self._job_id, filename=filename)
+                db.update_job(self._job_id, status="running", current_step=step)
+            elif success is True:
+                db.update_job(self._job_id, status="running", current_step=step)
+            else:
+                db.update_job(
+                    self._job_id, status="failed", current_step=step, error=error
+                )
+            db.log_step(
+                self._job_id,
+                step,
+                "running" if success is None else ("success" if success else "failure"),
+                filename=filename,
+                video_duration=video_duration,
+                elapsed=elapsed,
+                error=error,
+                detail=json.dumps(extra, ensure_ascii=False) if extra else None,
             )
-        db.log_step(
-            self._job_id,
-            step,
-            "running" if success is None else ("success" if success else "failure"),
-            filename=filename,
-            video_duration=video_duration,
-            elapsed=elapsed,
-            error=error,
-            detail=json.dumps(extra, ensure_ascii=False) if extra else None,
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -1,15 +1,15 @@
-"""Integration tests for FFmpeg container operations.
+"""Integration tests for FFmpeg container operations (docker cp workflow).
 
-These tests require a running ``ffmpeg-worker`` Docker container.
-They are marked with ``pytest.mark.integration`` and skipped automatically
-when the container is not available.
+These tests require a running ``ffmpeg-worker`` Docker container (started
+with ``docker compose up -d``).  They are marked with
+``pytest.mark.integration`` and skipped automatically when the container is
+not available.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -43,17 +43,15 @@ skip_if_no_container = pytest.mark.skipif(
 
 
 @pytest.fixture(scope="module")
-def shared_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Create a temporary shared directory and patch HOST_SHARED_DIR."""
-    d = tmp_path_factory.mktemp("shared")
-    return d
+def work_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Host-side directory holding the generated test video and outputs."""
+    return tmp_path_factory.mktemp("host-jobs")
 
 
 @pytest.fixture(scope="module")
-def test_video(shared_dir: Path) -> Path:
-    """Generate a 5-second test video using the host ffmpeg or container."""
-    video_path = shared_dir / "test_video.mp4"
-    # Use ffmpeg to generate a silent 5-second video with a test tone
+def test_video(work_dir: Path) -> Path:
+    """Generate a 5-second test video using the host ffmpeg binary."""
+    video_path = work_dir / "test_video.mp4"
     result = subprocess.run(
         [
             "ffmpeg",
@@ -73,59 +71,106 @@ def test_video(shared_dir: Path) -> Path:
     return video_path
 
 
+@pytest.fixture()
+def container_dir() -> PurePosixPath:
+    """A unique container-side temp directory, cleaned up after the test."""
+    import uuid
+
+    from src.ffmpeg_client import CONTAINER_TEMP_ROOT, remove_container_path
+
+    cdir = CONTAINER_TEMP_ROOT / f"it-{uuid.uuid4().hex[:12]}"
+    yield cdir
+    try:
+        remove_container_path(cdir)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 @skip_if_no_container
-class TestExtractAudio:
-    def test_extract_audio_creates_file(self, shared_dir: Path, test_video: Path) -> None:
-        import src.ffmpeg_client as client
+class TestDockerCp:
+    def test_copy_to_and_from_container(
+        self, work_dir: Path, container_dir: PurePosixPath
+    ) -> None:
+        from src.ffmpeg_client import copy_from_container, copy_to_container
 
-        orig_shared = client.HOST_SHARED_DIR
-        client.HOST_SHARED_DIR = shared_dir
-        try:
-            audio_out = shared_dir / "test_audio.m4a"
-            client.extract_audio(test_video, audio_out)
-            assert audio_out.exists()
-            assert audio_out.stat().st_size > 0
-        finally:
-            client.HOST_SHARED_DIR = orig_shared
+        src_file = work_dir / "hello.txt"
+        src_file.write_text("docker-cp round trip", encoding="utf-8")
+
+        copied = copy_to_container(src_file, container_dir)
+        assert copied == container_dir / "hello.txt"
+
+        back_dir = work_dir / "back"
+        result = copy_from_container(copied, back_dir)
+        assert result.read_text(encoding="utf-8") == "docker-cp round trip"
+
+    def test_copy_from_missing_file_raises(
+        self, work_dir: Path, container_dir: PurePosixPath
+    ) -> None:
+        from src.ffmpeg_client import copy_from_container
+
+        with pytest.raises((FileNotFoundError, RuntimeError)):
+            copy_from_container(container_dir / "does-not-exist.bin", work_dir)
 
 
 @skip_if_no_container
 class TestProbeDuration:
-    def test_probe_duration_returns_float(self, shared_dir: Path, test_video: Path) -> None:
-        import src.ffmpeg_client as client
+    def test_probe_duration_returns_float(
+        self, test_video: Path, container_dir: PurePosixPath
+    ) -> None:
+        from src.ffmpeg_client import copy_to_container, probe_duration
 
-        orig_shared = client.HOST_SHARED_DIR
-        client.HOST_SHARED_DIR = shared_dir
-        try:
-            duration = client.probe_duration(test_video)
-            assert isinstance(duration, float)
-            assert 4.0 <= duration <= 6.0  # generated 5-second video
-        finally:
-            client.HOST_SHARED_DIR = orig_shared
+        c_video = copy_to_container(test_video, container_dir)
+        duration = probe_duration(str(c_video))
+        assert isinstance(duration, float)
+        assert 4.0 <= duration <= 6.0  # generated 5-second video
+
+
+@skip_if_no_container
+class TestExtractAudio:
+    def test_extract_audio_creates_file(
+        self, work_dir: Path, test_video: Path, container_dir: PurePosixPath
+    ) -> None:
+        from src.ffmpeg_client import (
+            copy_from_container,
+            copy_to_container,
+            extract_audio,
+        )
+
+        c_video = copy_to_container(test_video, container_dir)
+        c_audio = container_dir / "test_audio.m4a"
+        extract_audio(str(c_video), str(c_audio))
+
+        audio_out = copy_from_container(c_audio, work_dir)
+        assert audio_out.exists()
+        assert audio_out.stat().st_size > 0
 
 
 @skip_if_no_container
 class TestBurnSubtitles:
     def test_burn_subtitles_creates_output(
-        self, shared_dir: Path, test_video: Path
+        self, work_dir: Path, test_video: Path, container_dir: PurePosixPath
     ) -> None:
-        import src.ffmpeg_client as client
+        from src.ffmpeg_client import (
+            burn_subtitles,
+            copy_from_container,
+            copy_to_container,
+        )
         from src.subtitle import Segment, write_srt
 
-        orig_shared = client.HOST_SHARED_DIR
-        client.HOST_SHARED_DIR = shared_dir
-        try:
-            srt_path = shared_dir / "test.srt"
-            write_srt([Segment(0.0, 2.0, "Hello World")], srt_path)
+        srt_path = work_dir / "test.srt"
+        write_srt([Segment(0.0, 2.0, "Hello World")], srt_path)
 
-            output_path = shared_dir / "test_output.mp4"
-            client.burn_subtitles(test_video, srt_path, output_path)
-            assert output_path.exists()
-            assert output_path.stat().st_size > 0
-        finally:
-            client.HOST_SHARED_DIR = orig_shared
+        c_video = copy_to_container(test_video, container_dir)
+        c_srt = copy_to_container(srt_path, container_dir)
+        c_output = container_dir / "test_output.mp4"
+
+        burn_subtitles(str(c_video), str(c_srt), str(c_output), fonts_dir=None)
+
+        output = copy_from_container(c_output, work_dir)
+        assert output.exists()
+        assert output.stat().st_size > 0
