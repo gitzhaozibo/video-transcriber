@@ -28,6 +28,15 @@ env/
 ~/.cache/huggingface/
 ~/.cache/whisper/
 
+# Per-job result JSON (RESULTS_DIR)
+results/
+
+# Engine comparison output (scripts/compare_engines.py)
+comparison/
+
+# Environment settings (copy .env.example to .env)
+.env
+
 # Streamlit
 .streamlit/secrets.toml
 

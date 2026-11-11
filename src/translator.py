@@ -141,5 +141,7 @@ def translate_segments(
             model=model,
         )
         for seg, text in zip(batch, translated):
-            result.append(Segment(start=seg.start, end=seg.end, text=text))
+            result.append(
+                Segment(start=seg.start, end=seg.end, text=text, speaker=seg.speaker)
+            )
     return result

@@ -98,13 +98,32 @@ class TestSegmentConversions:
         ]
         dicts = segments_to_dicts(segs)
         assert dicts == [
-            {"start": 0.0, "end": 1.0, "text": "Hello"},
-            {"start": 1.5, "end": 3.0, "text": "World"},
+            {"speaker": None, "start": 0.0, "end": 1.0, "text": "Hello"},
+            {"speaker": None, "start": 1.5, "end": 3.0, "text": "World"},
         ]
+        assert list(dicts[0]) == ["speaker", "start", "end", "text"]
         restored = segments_from_dicts(dicts)
         assert len(restored) == 2
         assert restored[0].start == 0.0
         assert restored[1].text == "World"
+        assert restored[0].speaker is None
+
+    def test_roundtrip_with_speaker(self) -> None:
+        segs = [Segment(start=0.0, end=1.0, text="Hi", speaker=2)]
+        assert segments_from_dicts(segments_to_dicts(segs)) == segs
+
+    @pytest.mark.parametrize(
+        "value, expected",
+        [(1, 1), (2.0, 2), ("3", 3), (" 4 ", 4), (None, None), ("", None),
+         (float("nan"), None), ("abc", None), (True, None)],
+    )
+    def test_speaker_parsing(self, value, expected) -> None:
+        rows = [{"speaker": value, "start": 0, "end": 1, "text": "x"}]
+        assert segments_from_dicts(rows)[0].speaker == expected
+
+    def test_missing_speaker_key(self) -> None:
+        segs = segments_from_dicts([{"start": 0, "end": 1, "text": "x"}])
+        assert segs[0].speaker is None
 
     def test_from_dicts_coerces_types(self) -> None:
         rows = [{"start": "0.5", "end": "1.5", "text": 42}]

@@ -255,12 +255,17 @@ class StepTimer:
         *,
         filename: Optional[str] = None,
         video_duration: Optional[float] = None,
+        record: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         self._logger = job_logger
         self._step = step
         self._filename = filename
         self._video_duration = video_duration
+        # When given, a {"step", "elapsed_seconds", "success", "error"} entry is
+        # appended on exit (used for the per-job result JSON).
+        self._record = record
         self._start: float = 0.0
+        self.elapsed: Optional[float] = None
 
     def __enter__(self) -> "StepTimer":
         self._start = time.monotonic()
@@ -278,6 +283,16 @@ class StepTimer:
         exc_tb: Any,
     ) -> bool:
         elapsed = time.monotonic() - self._start
+        self.elapsed = elapsed
+        if self._record is not None:
+            self._record.append(
+                {
+                    "step": self._step,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "success": exc_type is None,
+                    "error": None if exc_type is None else str(exc_val),
+                }
+            )
         if exc_type is None:
             self._logger.success(
                 self._step,
