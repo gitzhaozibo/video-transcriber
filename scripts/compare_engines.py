@@ -130,7 +130,7 @@ def run_azure(
     run = EngineRun(engine="azure")
     try:
         config = azure_transcriber.load_config()
-        run.detail = f"fast transcription / {', '.join(config.locales)}"
+        run.detail = f"fast transcription / {config.language_label}"
         with _Timer(run, "extract"):
             chunks = extract_speech_audio_chunks(
                 str(c_input), str(cdir / "speech"), chunk_seconds=config.max_chunk_seconds

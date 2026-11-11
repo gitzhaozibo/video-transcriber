@@ -58,7 +58,9 @@ class TestUploadFlow:
         assert not at.exception
 
 
-_AZURE_ENV = ("TRANSCRIBE_ENGINE", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT", "AZURE_SPEECH_REGION")
+_AZURE_ENV = ("TRANSCRIBE_ENGINE", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT",
+              "AZURE_SPEECH_REGION", "AZURE_SPEECH_LOCALES", "AZURE_PHRASE_LIST",
+              "AZURE_PHRASE_LIST_WEIGHT")
 
 
 @pytest.fixture
@@ -138,7 +140,7 @@ class TestResultJson:
 
         raw_body = {"durationMilliseconds": 2000,
                     "phrases": [{"offsetMilliseconds": 500, "durationMilliseconds": 1500,
-                                 "text": "こんにちは", "speaker": 1}]}
+                                 "text": "こんにちは", "speaker": 1, "locale": "ja-JP"}]}
 
         def fake_transcribe_chunks(chunks, *, config=None, responses=None):
             responses.append({"file": "chunk_000.ogg", "start_seconds": 0.0,
@@ -201,6 +203,13 @@ class TestResultJson:
         assert json.loads((job_folder / "result.json").read_text(encoding="utf-8")) == data
         assert (job_folder / "transcript.json").exists()
         assert data["engine"]["raw_response_file"] == "azure_response.json"
+        assert data["engine"]["language_mode"] == "identification"
+        assert data["engine"]["phrase_list"] == []
+        assert data["transcription"]["language"] == {
+            "locale": "ja-JP",
+            "locales": [{"locale": "ja-JP", "seconds": 1.5, "phrases": 1}],
+        }
+        assert any("Detected language: ja-JP" in c.value for c in at.caption)
         assert "_azure_response" not in data
         for f in (folder, job_folder):
             raw = json.loads((f / "azure_response.json").read_text(encoding="utf-8"))

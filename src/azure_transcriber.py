@@ -16,12 +16,22 @@ Configuration (environment variables or Streamlit secrets):
 ``AZURE_SPEECH_KEY``            Speech resource key (required).
 ``AZURE_SPEECH_ENDPOINT``       e.g. ``https://<name>.cognitiveservices.azure.com``.
 ``AZURE_SPEECH_REGION``         e.g. ``japaneast`` (used when no endpoint is set).
-``AZURE_SPEECH_LOCALES``        Candidate locales for language identification.
+``AZURE_SPEECH_LOCALES``        Candidate locales for language identification, or
+                                ``multilingual`` for code-switched audio (see below).
+``AZURE_PHRASE_LIST``           Words to recognise better (names, products...),
+                                comma or newline separated.
+``AZURE_PHRASE_LIST_WEIGHT``    Optional phrase list biasing weight (0.0–2.0).
 ``AZURE_DIARIZATION``           Identify speakers (``true``/``false``, default true).
 ``AZURE_MAX_SPEAKERS``          Upper bound hint for diarization (2–35, default 4).
 ``AZURE_MAX_SEGMENT_SECONDS``   Split phrases longer than this (0 disables).
 ``AZURE_MAX_CHUNK_SECONDS``     Audio chunk length sent per request.
 ``AZURE_REQUEST_TIMEOUT``       Read timeout (seconds) for one request.
+
+Language identification picks **one main locale per request** (per audio
+chunk here).  For audio that switches language mid-file, set
+``AZURE_SPEECH_LOCALES=multilingual``: ``locales`` is then sent empty and the
+multilingual model transcribes each language as it is spoken (it supports
+ja-JP, en-US, zh-CN and de-DE among others).
 """
 
 from __future__ import annotations
@@ -29,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -46,6 +57,8 @@ DEFAULT_LOCALES = ("ja-JP", "en-US", "zh-CN", "de-DE")
 DEFAULT_MAX_SEGMENT_SECONDS = 10.0
 DEFAULT_DIARIZATION = True
 DEFAULT_MAX_SPEAKERS = 4
+MULTILINGUAL = "multilingual"   # AZURE_SPEECH_LOCALES value for locales: []
+PHRASE_WEIGHT_RANGE = (0.0, 2.0)
 MIN_SPEAKERS, MAX_SPEAKERS = 2, 35  # range accepted by the API
 # Fast transcription accepts < 5 h per file; 4 h chunks leave a safe margin.
 API_MAX_AUDIO_SECONDS = 5 * 60 * 60
@@ -130,6 +143,27 @@ class AzureSpeechConfig:
     max_segment_seconds: float = DEFAULT_MAX_SEGMENT_SECONDS
     max_chunk_seconds: int = DEFAULT_MAX_CHUNK_SECONDS
     request_timeout: int = DEFAULT_REQUEST_TIMEOUT
+    phrase_list: tuple[str, ...] = ()
+    phrase_list_weight: Optional[float] = None
+
+    @property
+    def multilingual(self) -> bool:
+        """True when ``locales`` is sent empty (multilingual transcription)."""
+        return not self.locales
+
+    @property
+    def language_mode(self) -> str:
+        """``multilingual``, ``identification`` (several candidates) or ``fixed``."""
+        if self.multilingual:
+            return MULTILINGUAL
+        return "identification" if len(self.locales) > 1 else "fixed"
+
+    @property
+    def language_label(self) -> str:
+        """Human readable language setting, e.g. for the UI."""
+        if self.multilingual:
+            return "multilingual (language may switch within the audio)"
+        return ", ".join(self.locales)
 
     @property
     def url(self) -> str:
@@ -166,11 +200,31 @@ def load_config() -> AzureSpeechConfig:
         )
 
     locales_raw = _get_setting("AZURE_SPEECH_LOCALES")
-    locales = (
-        tuple(loc.strip() for loc in locales_raw.split(",") if loc.strip())
-        if locales_raw
-        else DEFAULT_LOCALES
+    if locales_raw and locales_raw.lower() == MULTILINGUAL:
+        locales: tuple[str, ...] = ()
+    elif locales_raw:
+        locales = tuple(loc.strip() for loc in locales_raw.split(",") if loc.strip())
+    else:
+        locales = DEFAULT_LOCALES
+    if MULTILINGUAL in (loc.lower() for loc in locales):
+        raise AzureTranscriptionConfigError(
+            f"AZURE_SPEECH_LOCALES={MULTILINGUAL} cannot be combined with locales: "
+            f"{locales_raw!r}"
+        )
+
+    phrases_raw = _get_setting("AZURE_PHRASE_LIST") or ""
+    phrase_list = tuple(
+        dict.fromkeys(p.strip() for p in re.split(r"[,\n]", phrases_raw) if p.strip())
     )
+    weight_raw = _get_setting("AZURE_PHRASE_LIST_WEIGHT")
+    phrase_weight = None
+    if weight_raw is not None:
+        phrase_weight = _number_setting("AZURE_PHRASE_LIST_WEIGHT", 0.0)
+        low, high = PHRASE_WEIGHT_RANGE
+        if not low <= phrase_weight <= high:
+            raise AzureTranscriptionConfigError(
+                f"AZURE_PHRASE_LIST_WEIGHT must be between {low} and {high}: {phrase_weight}"
+            )
 
     max_segment = _number_setting("AZURE_MAX_SEGMENT_SECONDS", DEFAULT_MAX_SEGMENT_SECONDS)
     max_chunk = int(_number_setting("AZURE_MAX_CHUNK_SECONDS", DEFAULT_MAX_CHUNK_SECONDS))
@@ -198,6 +252,8 @@ def load_config() -> AzureSpeechConfig:
         max_segment_seconds=max_segment,
         max_chunk_seconds=max_chunk,
         request_timeout=timeout,
+        phrase_list=phrase_list,
+        phrase_list_weight=phrase_weight,
     )
 
 
@@ -319,12 +375,18 @@ def _retry_delay(response: Optional[requests.Response], attempt: int) -> float:
 def build_definition(config: AzureSpeechConfig) -> dict[str, Any]:
     """Return the ``definition`` JSON sent with each fast transcription request."""
     definition: dict[str, Any] = {
+        # Empty list = multilingual transcription; several = language identification.
         "locales": list(config.locales),
         "profanityFilterMode": "None",
     }
     if config.diarization:
         # The audio is mono, which diarization requires.
         definition["diarization"] = {"enabled": True, "maxSpeakers": config.max_speakers}
+    if config.phrase_list:
+        phrase_list: dict[str, Any] = {"phrases": list(config.phrase_list)}
+        if config.phrase_list_weight is not None:
+            phrase_list["biasingWeight"] = config.phrase_list_weight
+        definition["phraseList"] = phrase_list
     return definition
 
 
@@ -421,7 +483,7 @@ def transcribe_file(
         audio_path,
         audio_path.stat().st_size / 1_000_000,
         offset,
-        ",".join(config.locales),
+        config.language_label,
     )
     result = _post_audio(audio_path, config)
     if responses is not None:
@@ -452,6 +514,31 @@ def transcribe_chunks(
             transcribe_file(audio_path, offset=offset, config=config, responses=responses)
         )
     return segments
+
+
+def locale_summary(responses: Sequence[dict]) -> dict[str, Any]:
+    """Summarise the locales Azure detected, from raw chunk responses.
+
+    Returns ``{"locale": <main locale or None>, "locales": [{"locale",
+    "seconds", "phrases"}, ...]}`` with the locales ordered by speaking time.
+    """
+    seconds: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for chunk in responses:
+        for phrase in (chunk.get("response") or {}).get("phrases") or []:
+            if not (phrase.get("text") or "").strip():
+                continue
+            locale = phrase.get("locale") or "unknown"
+            seconds[locale] = seconds.get(locale, 0.0) + _ms(phrase.get("durationMilliseconds"))
+            counts[locale] = counts.get(locale, 0) + 1
+    ordered = sorted(seconds, key=lambda loc: (-seconds[loc], loc))
+    return {
+        "locale": ordered[0] if ordered else None,
+        "locales": [
+            {"locale": loc, "seconds": round(seconds[loc], 3), "phrases": counts[loc]}
+            for loc in ordered
+        ],
+    }
 
 
 def response_document(config: AzureSpeechConfig, responses: Sequence[dict]) -> dict[str, Any]:

@@ -28,6 +28,10 @@ Schema of ``result.json`` (``schema_version`` 1)::
       "steps": [{"step": "upload", "elapsed_seconds": 1.2,
                  "success": true, "error": null}, ...],
       "transcription": {"segment_count": 2, "text": "...",
+                        "language": {"locale": "ja-JP",          # Azure only
+                                     "locales": [{"locale": "ja-JP",
+                                                  "seconds": 52.1,
+                                                  "phrases": 12}]} | null,
                         "segments": [{"speaker": 1 | null, "start": 0.0,
                                       "end": 2.5, "text": "..."}]},
       "translation": {"status": "completed" | "skipped" | "failed",
@@ -108,11 +112,18 @@ def new_result(
     }
 
 
-def set_transcription(result: dict[str, Any], segments: Sequence[Segment | dict]) -> None:
+def set_transcription(
+    result: dict[str, Any],
+    segments: Sequence[Segment | dict],
+    *,
+    language: Optional[dict[str, Any]] = None,
+) -> None:
+    """Store the transcription; *language* is the detected-locale summary (Azure)."""
     rows = segments_payload(segments)
     result["transcription"] = {
         "segment_count": len(rows),
         "text": "\n".join(r["text"] for r in rows if r["text"]),
+        "language": language,
         "segments": rows,
     }
 
