@@ -56,6 +56,14 @@ class TestResultDocument:
         results.set_transcription(res, [Segment(0, 1, "a"), Segment(1, 2, " "), Segment(2, 3, "b")])
         assert res["transcription"]["segment_count"] == 3
         assert res["transcription"]["text"] == "a\nb"
+        assert res["transcription"]["language"] is None  # Whisper: not detected
+
+    def test_set_transcription_with_language(self) -> None:
+        res = _result()
+        language = {"locale": "ja-JP", "locales": [{"locale": "ja-JP", "seconds": 1.0,
+                                                    "phrases": 1}]}
+        results.set_transcription(res, [Segment(0, 1, "a")], language=language)
+        assert res["transcription"]["language"] == language
 
     def test_set_translation_skipped(self) -> None:
         res = _result()

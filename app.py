@@ -191,6 +191,9 @@ def _engine_info(engine: str) -> dict:
             "api_version": AZURE_CONFIG.api_version,
             "endpoint": AZURE_CONFIG.endpoint,
             "locales": list(AZURE_CONFIG.locales),
+            "language_mode": AZURE_CONFIG.language_mode,
+            "phrase_list": list(AZURE_CONFIG.phrase_list),
+            "phrase_list_weight": AZURE_CONFIG.phrase_list_weight,
             "diarization": AZURE_CONFIG.diarization,
             "max_speakers": AZURE_CONFIG.max_speakers if AZURE_CONFIG.diarization else None,
             "max_segment_seconds": AZURE_CONFIG.max_segment_seconds,
@@ -256,7 +259,9 @@ if engine_unavailable:
 elif selected_engine == ENGINE_AZURE:
     st.caption(
         "Audio is sent to Azure (billed per audio hour).  "
-        f"Language candidates: {', '.join(AZURE_CONFIG.locales)}  |  "
+        f"Language: {AZURE_CONFIG.language_label}  |  "
+        + (f"Phrase list: {len(AZURE_CONFIG.phrase_list)} words  |  "
+           if AZURE_CONFIG.phrase_list else "")
         + (
             f"Speaker identification: on (up to {AZURE_CONFIG.max_speakers})"
             if AZURE_CONFIG.diarization
@@ -529,7 +534,13 @@ if uploaded_file is not None:
         if failed_step is None:
             db.update_job(job_id, status="transcribed", current_step="edit")
             st.session_state.used_engine = selected_engine
-            results.set_transcription(result, st.session_state.segments)
+            raw = result.get(results.RAW_RESPONSE_KEY)
+            results.set_transcription(
+                result,
+                st.session_state.segments,
+                language=(azure_transcriber.locale_summary(raw["chunks"])
+                          if raw else None),
+            )
             result["status"] = "transcribed"
             _save_result()
             st.session_state.processing = False
@@ -546,6 +557,15 @@ if st.session_state.segments is not None:
     if st.session_state.video_duration:
         caption_parts.append(f"Video duration: {st.session_state.video_duration:.1f} s")
     caption_parts.append(f"Segments: {len(st.session_state.segments)}")
+    _language = (
+        ((st.session_state.result or {}).get("transcription") or {}).get("language") or {}
+    )
+    if _language.get("locales"):
+        caption_parts.append(
+            "Detected language: "
+            + ", ".join(f"{loc['locale']} ({loc['seconds']:.0f} s)"
+                        for loc in _language["locales"])
+        )
     st.caption("  |  ".join(caption_parts))
 
     tab_transcript, tab_translation, tab_edit = st.tabs(
@@ -801,7 +821,7 @@ with st.sidebar:
         + f"**Transcription**: {ENGINE_LABELS[selected_engine]}\n\n"
         + (
             "**Azure Speech**: configured "
-            f"({', '.join(AZURE_CONFIG.locales)})\n\n"
+            f"({AZURE_CONFIG.language_label})\n\n"
             if AZURE_CONFIG is not None
             else "**Azure Speech**: not configured\n\n"
         )

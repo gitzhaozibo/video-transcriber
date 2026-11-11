@@ -133,6 +133,10 @@ AZURE_SPEECH_ENDPOINT=https://<リソース名>.cognitiveservices.azure.com
 - 長時間の音声は `AZURE_MAX_CHUNK_SECONDS`（既定 4 時間）ごとに分割して送信し、タイムスタンプを補正して結合します。
 - 言語は `AZURE_SPEECH_LOCALES`（既定: 日本語・英語・中国語・ドイツ語）の中から自動判定します。
   判定はファイル（チャンク）ごとに主要な 1 言語です。
+  1 本の中で言語が切り替わる動画（日本語の会議で一部だけ英語など）は、`AZURE_SPEECH_LOCALES=multilingual` にすると
+  多言語モデル（`locales: []`）で話された言語ごとに文字起こしします（ja-JP / en-US / zh-CN / de-DE を含む 15 言語に対応）。
+- 社名・人名・製品名などは `AZURE_PHRASE_LIST`（カンマ区切り）に登録すると認識されやすくなります（フレーズリスト）。
+- 判定された言語は `result.json` の `transcription.language` に、発話時間の長い順で記録され、結果画面にも表示されます。
 - 話者識別（diarization）を既定で有効にし、各セグメントに `speaker`（API が返す整数）を付けます。`AZURE_DIARIZATION=false` で無効化、`AZURE_MAX_SPEAKERS`（2〜35、既定 4）で想定する最大話者数を指定します。
   話者番号はリクエスト（音声チャンク）ごとに振られるため、`AZURE_MAX_CHUNK_SECONDS` を超える長さの音声では、チャンクをまたいで同じ番号が同じ人物とは限りません。
 - 長い発話は単語タイムスタンプを使って `AZURE_MAX_SEGMENT_SECONDS`（既定 10 秒）以内に分割し、字幕向けのセグメントにします。
@@ -159,7 +163,9 @@ streamlit run app.py
 | `AZURE_SPEECH_KEY` | （なし） | Azure Speech リソースのキー（`azure` 時は必須） |
 | `AZURE_SPEECH_ENDPOINT` | （なし） | 例: `https://<リソース名>.cognitiveservices.azure.com`。未設定なら `AZURE_SPEECH_REGION` から生成 |
 | `AZURE_SPEECH_REGION` | （なし） | 例: `japaneast`（`AZURE_SPEECH_ENDPOINT` 未設定時に使用） |
-| `AZURE_SPEECH_LOCALES` | `ja-JP,en-US,zh-CN,de-DE` | 言語自動判定の候補（カンマ区切り） |
+| `AZURE_SPEECH_LOCALES` | `ja-JP,en-US,zh-CN,de-DE` | 言語自動判定の候補（カンマ区切り）。`multilingual` で多言語モード（途中で言語が切り替わる音声向け） |
+| `AZURE_PHRASE_LIST` | （なし） | 認識させたい固有名詞・専門用語（カンマ区切り） |
+| `AZURE_PHRASE_LIST_WEIGHT` | （なし） | フレーズリストの重み（0.0〜2.0、未設定ならサービス既定） |
 | `AZURE_DIARIZATION` | `true` | Azure の話者識別。有効時は各セグメントに `speaker` を付与（Whisper は常に `null`） |
 | `AZURE_MAX_SPEAKERS` | `4` | 話者識別で想定する最大話者数（2〜35） |
 | `AZURE_MAX_SEGMENT_SECONDS` | `10` | これより長い発話を単語境界で分割（`0` で分割しない） |

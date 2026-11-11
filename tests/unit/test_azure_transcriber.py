@@ -21,6 +21,10 @@ _AZURE_ENV_VARS = (
     "AZURE_MAX_SEGMENT_SECONDS",
     "AZURE_MAX_CHUNK_SECONDS",
     "AZURE_REQUEST_TIMEOUT",
+    "AZURE_DIARIZATION",
+    "AZURE_MAX_SPEAKERS",
+    "AZURE_PHRASE_LIST",
+    "AZURE_PHRASE_LIST_WEIGHT",
 )
 
 
@@ -137,6 +141,103 @@ class TestLoadConfig:
 # ---------------------------------------------------------------------------
 # Response conversion
 # ---------------------------------------------------------------------------
+
+
+class TestLanguageAndPhraseList:
+    @pytest.fixture(autouse=True)
+    def _creds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("AZURE_SPEECH_KEY", "k")
+        monkeypatch.setenv("AZURE_SPEECH_REGION", "japaneast")
+
+    def test_default_is_language_identification(self) -> None:
+        cfg = az.load_config()
+        assert cfg.language_mode == "identification"
+        assert not cfg.multilingual
+        assert cfg.language_label == "ja-JP, en-US, zh-CN, de-DE"
+        assert az.build_definition(cfg)["locales"] == ["ja-JP", "en-US", "zh-CN", "de-DE"]
+
+    @pytest.mark.parametrize("value", ["multilingual", "MULTILINGUAL", " multilingual "])
+    def test_multilingual_sends_empty_locales(self, monkeypatch, value) -> None:
+        monkeypatch.setenv("AZURE_SPEECH_LOCALES", value)
+        cfg = az.load_config()
+        assert cfg.locales == ()
+        assert cfg.multilingual
+        assert cfg.language_mode == "multilingual"
+        assert "multilingual" in cfg.language_label
+        definition = az.build_definition(cfg)
+        assert definition["locales"] == []
+        assert definition["diarization"]["enabled"] is True  # still combined
+
+    def test_single_locale_is_fixed(self, monkeypatch) -> None:
+        monkeypatch.setenv("AZURE_SPEECH_LOCALES", "ja-JP")
+        assert az.load_config().language_mode == "fixed"
+
+    def test_multilingual_cannot_be_mixed(self, monkeypatch) -> None:
+        monkeypatch.setenv("AZURE_SPEECH_LOCALES", "multilingual,ja-JP")
+        with pytest.raises(az.AzureTranscriptionConfigError, match="multilingual"):
+            az.load_config()
+
+    def test_no_phrase_list_by_default(self) -> None:
+        cfg = az.load_config()
+        assert cfg.phrase_list == ()
+        assert "phraseList" not in az.build_definition(cfg)
+
+    def test_phrase_list_parsed_and_sent(self, monkeypatch) -> None:
+        monkeypatch.setenv("AZURE_PHRASE_LIST", "Contoso, 山田太郎\nゲートキーパー,,Contoso")
+        cfg = az.load_config()
+        assert cfg.phrase_list == ("Contoso", "山田太郎", "ゲートキーパー")
+        assert az.build_definition(cfg)["phraseList"] == {
+            "phrases": ["Contoso", "山田太郎", "ゲートキーパー"]
+        }
+
+    def test_phrase_list_weight(self, monkeypatch) -> None:
+        monkeypatch.setenv("AZURE_PHRASE_LIST", "Contoso")
+        monkeypatch.setenv("AZURE_PHRASE_LIST_WEIGHT", "1.5")
+        cfg = az.load_config()
+        assert az.build_definition(cfg)["phraseList"] == {
+            "phrases": ["Contoso"], "biasingWeight": 1.5,
+        }
+
+    @pytest.mark.parametrize("value", ["2.5", "-0.1", "heavy"])
+    def test_invalid_phrase_list_weight(self, monkeypatch, value) -> None:
+        monkeypatch.setenv("AZURE_PHRASE_LIST_WEIGHT", value)
+        with pytest.raises(az.AzureTranscriptionConfigError, match="AZURE_PHRASE_LIST_WEIGHT"):
+            az.load_config()
+
+    def test_phrase_list_in_request(self, tmp_path: Path) -> None:
+        audio = tmp_path / "a.ogg"
+        audio.write_bytes(b"x")
+        with patch.object(az.requests, "post",
+                          return_value=_response(200, {"phrases": []})) as post:
+            az.transcribe_file(audio, config=_config(phrase_list=("Contoso",)))
+        definition = json.loads(post.call_args.kwargs["files"]["definition"][1])
+        assert definition["phraseList"] == {"phrases": ["Contoso"]}
+
+
+class TestLocaleSummary:
+    def test_orders_by_speaking_time_across_chunks(self) -> None:
+        def p(ms: int, locale, text="x"):
+            phrase = {"offsetMilliseconds": 0, "durationMilliseconds": ms, "text": text}
+            if locale:
+                phrase["locale"] = locale
+            return phrase
+
+        responses = [
+            {"response": {"phrases": [p(2000, "ja-JP"), p(1500, "en-US"), p(900, None)]}},
+            {"response": {"phrases": [p(3000, "ja-JP"), p(4000, "en-US", text=" ")]}},
+            {"response": {}},
+        ]
+        assert az.locale_summary(responses) == {
+            "locale": "ja-JP",
+            "locales": [
+                {"locale": "ja-JP", "seconds": 5.0, "phrases": 2},
+                {"locale": "en-US", "seconds": 1.5, "phrases": 1},
+                {"locale": "unknown", "seconds": 0.9, "phrases": 1},
+            ],
+        }
+
+    def test_empty(self) -> None:
+        assert az.locale_summary([]) == {"locale": None, "locales": []}
 
 
 class TestPhrasesToSegments:
