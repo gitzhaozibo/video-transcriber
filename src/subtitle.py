@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Optional, Sequence
 
 
 @dataclass
@@ -13,6 +14,30 @@ class Segment:
     start: float  # seconds
     end: float    # seconds
     text: str
+    # Speaker number from diarization (Azure: 1, 2, …); None when the engine
+    # does not identify speakers (Whisper).
+    speaker: Optional[int] = None
+
+
+def parse_speaker(value: Any) -> Optional[int]:
+    """Coerce a speaker value from an editor row / JSON to ``int`` or ``None``.
+
+    Accepts ints, int-like floats/strings, and treats ``None``, ``""`` and NaN
+    (what ``st.data_editor`` returns for empty cells) as no speaker.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(number):
+        return None
+    return int(number)
 
 
 def format_timestamp(seconds: float) -> str:
@@ -81,7 +106,8 @@ def write_srt(segments: Sequence[Segment], path: "str | __import__('pathlib').Pa
 def segments_from_dicts(rows: list[dict]) -> list[Segment]:
     """Convert a list of dicts (as produced by ``st.data_editor``) to segments.
 
-    Each dict must contain ``"start"``, ``"end"``, and ``"text"`` keys.
+    Each dict must contain ``"start"``, ``"end"``, and ``"text"`` keys; an
+    optional ``"speaker"`` key is parsed with :func:`parse_speaker`.
 
     Parameters
     ----------
@@ -100,6 +126,7 @@ def segments_from_dicts(rows: list[dict]) -> list[Segment]:
                 start=float(row["start"]),
                 end=float(row["end"]),
                 text=str(row["text"]),
+                speaker=parse_speaker(row.get("speaker")),
             )
         )
     return result
@@ -116,9 +143,10 @@ def segments_to_dicts(segments: Sequence[Segment]) -> list[dict]:
     Returns
     -------
     list[dict]
-        List of row dicts with keys ``"start"``, ``"end"``, and ``"text"``.
+        List of row dicts with keys ``"speaker"``, ``"start"``, ``"end"`` and
+        ``"text"`` (``speaker`` is ``None`` when the engine has no speakers).
     """
     return [
-        {"start": seg.start, "end": seg.end, "text": seg.text}
+        {"speaker": seg.speaker, "start": seg.start, "end": seg.end, "text": seg.text}
         for seg in segments
     ]

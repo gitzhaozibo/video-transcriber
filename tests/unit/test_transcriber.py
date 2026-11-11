@@ -107,3 +107,24 @@ class TestTranscribe:
 
             result = list(transcribe(audio))
         assert result == []
+
+
+class TestGetEngine:
+    def test_default_is_whisper(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("TRANSCRIBE_ENGINE", raising=False)
+        from src.transcriber import get_engine
+
+        assert get_engine() == "whisper"
+
+    def test_azure_case_insensitive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRANSCRIBE_ENGINE", " Azure ")
+        from src.transcriber import get_engine
+
+        assert get_engine() == "azure"
+
+    def test_unknown_engine_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRANSCRIBE_ENGINE", "google")
+        from src.transcriber import get_engine
+
+        with pytest.raises(ValueError, match="TRANSCRIBE_ENGINE"):
+            get_engine()

@@ -8,6 +8,7 @@ time.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,27 @@ from typing import Optional
 from src.subtitle import Segment
 
 logger = logging.getLogger(__name__)
+
+# Transcription engine selected via the TRANSCRIBE_ENGINE environment variable.
+ENGINE_WHISPER = "whisper"
+ENGINE_AZURE = "azure"
+ENGINES = (ENGINE_WHISPER, ENGINE_AZURE)
+
+
+def get_engine() -> str:
+    """Return the configured transcription engine (default: ``"whisper"``).
+
+    Raises
+    ------
+    ValueError
+        If ``TRANSCRIBE_ENGINE`` is set to an unknown value.
+    """
+    engine = (os.environ.get("TRANSCRIBE_ENGINE") or ENGINE_WHISPER).strip().lower()
+    if engine not in ENGINES:
+        raise ValueError(
+            f"Unknown TRANSCRIBE_ENGINE {engine!r}; expected one of: {', '.join(ENGINES)}"
+        )
+    return engine
 
 # Default model configuration (CPU + int8 quantisation for speed)
 DEFAULT_MODEL = "large-v3"
