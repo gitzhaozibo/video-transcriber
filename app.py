@@ -41,7 +41,7 @@ from src.ffmpeg_client import (  # noqa: E402
     copy_from_container,
     copy_to_container,
     extract_audio,
-    extract_speech_audio_chunks,
+    extract_speech_audio,
     get_docker_diagnostics,
     probe_duration,
 )
@@ -191,13 +191,9 @@ def _engine_info(engine: str) -> dict:
             "api_version": AZURE_CONFIG.api_version,
             "endpoint": AZURE_CONFIG.endpoint,
             "locales": list(AZURE_CONFIG.locales),
-            "language_mode": AZURE_CONFIG.language_mode,
             "phrase_list": list(AZURE_CONFIG.phrase_list),
-            "phrase_list_weight": AZURE_CONFIG.phrase_list_weight,
             "diarization": AZURE_CONFIG.diarization,
             "max_speakers": AZURE_CONFIG.max_speakers if AZURE_CONFIG.diarization else None,
-            "max_segment_seconds": AZURE_CONFIG.max_segment_seconds,
-            "max_chunk_seconds": AZURE_CONFIG.max_chunk_seconds,
         }
     return {
         "name": ENGINE_WHISPER,
@@ -315,11 +311,9 @@ if uploaded_file is not None:
         cdir = container_job_dir(job_id)
         c_video = cdir / uploaded_file.name
         c_audio = cdir / (Path(uploaded_file.name).stem + ".m4a")
-        # Azure: compact speech audio chunks (container → host)
-        c_speech_dir = cdir / "speech"
-        speech_dir = jdir / "speech"
-        c_chunks: list = []
-        host_chunks: list[tuple[Path, float]] = []
+        # Azure: one compact speech audio file (container → host)
+        c_speech = cdir / (Path(uploaded_file.name).stem + "_speech.ogg")
+        speech_path = jdir / c_speech.name
 
         failed_step: Optional[str] = None
 
@@ -360,6 +354,22 @@ if uploaded_file is not None:
                           uploaded_file.name)
                     failed_step = "probe_duration"
 
+        # ── Azure limit: < 5 hours per file (the audio is not split) ───
+        if failed_step is None and use_azure:
+            _limit = azure_transcriber.API_MAX_AUDIO_SECONDS
+            _duration = st.session_state.video_duration or 0.0
+            if _duration >= _limit:
+                _fail(
+                    job_logger, "check_duration",
+                    RuntimeError(
+                        f"The video is {_duration / 3600:.1f} hours long; Azure fast "
+                        f"transcription accepts audio shorter than {_limit // 3600} "
+                        "hours.  Use Whisper or split the video."
+                    ),
+                    job_id, uploaded_file.name,
+                )
+                failed_step = "check_duration"
+
         # ── Extract audio (in container) ───────────────────────────────
         if failed_step is None:
             spinner_text = (
@@ -377,11 +387,7 @@ if uploaded_file is not None:
                     ):
                         if use_azure:
                             # Straight from the video to mono 16 kHz Opus 32k.
-                            c_chunks = extract_speech_audio_chunks(
-                                str(c_video),
-                                str(c_speech_dir),
-                                chunk_seconds=AZURE_CONFIG.max_chunk_seconds,
-                            )
+                            extract_speech_audio(str(c_video), str(c_speech))
                             result["engine"]["audio_format"] = dict(SPEECH_AUDIO_FORMAT)
                         else:
                             extract_audio(str(c_video), str(c_audio))
@@ -416,18 +422,11 @@ if uploaded_file is not None:
                         job_logger, "copy_from_container", filename=uploaded_file.name
                     ):
                         if use_azure:
-                            host_chunks = [
-                                (copy_from_container(chunk.path, speech_dir), chunk.start)
-                                for chunk in c_chunks
-                            ]
-                            result["engine"]["audio_chunks"] = [
-                                {
-                                    "file": path.name,
-                                    "start_seconds": round(start, 3),
-                                    "size_bytes": path.stat().st_size,
-                                }
-                                for path, start in host_chunks
-                            ]
+                            speech_path = copy_from_container(c_speech, jdir)
+                            result["engine"]["audio_file"] = {
+                                "file": speech_path.name,
+                                "size_bytes": speech_path.stat().st_size,
+                            }
                         else:
                             copy_from_container(PurePosixPath(c_audio), jdir)
                 except Exception as exc:
@@ -437,35 +436,23 @@ if uploaded_file is not None:
 
         # ── Transcribe (Azure fast transcription) ──────────────────────
         if failed_step is None and use_azure:
-            spinner_text = (
-                "Transcribing with Azure Speech (fast transcription)…"
-                if len(host_chunks) == 1
-                else f"Transcribing with Azure Speech ({len(host_chunks)} chunks)…"
-            )
             try:
-                with st.spinner(spinner_text):
+                with st.spinner("Transcribing with Azure Speech (fast transcription)…"):
                     with _timer(
                         job_logger,
                         "transcribe",
                         filename=uploaded_file.name,
                         video_duration=st.session_state.video_duration,
                     ):
-                        raw_responses: list = []
-                        try:
-                            segments = azure_transcriber.transcribe_chunks(
-                                host_chunks, config=AZURE_CONFIG,
-                                responses=raw_responses,
-                            )
-                        finally:
-                            # Keep response.json() of every chunk that came
-                            # back, even if a later chunk failed.
-                            if raw_responses:
-                                results.set_raw_response(
-                                    result,
-                                    azure_transcriber.response_document(
-                                        AZURE_CONFIG, raw_responses
-                                    ),
-                                )
+                        segments, raw_response = azure_transcriber.transcribe_file(
+                            speech_path, config=AZURE_CONFIG
+                        )
+                        results.set_raw_response(
+                            result,
+                            azure_transcriber.response_document(
+                                AZURE_CONFIG, speech_path.name, raw_response
+                            ),
+                        )
                 st.session_state.segments = segments_to_dicts(segments)
             except Exception as exc:
                 _fail(job_logger, "transcribe", exc, job_id, uploaded_file.name)
@@ -538,7 +525,7 @@ if uploaded_file is not None:
             results.set_transcription(
                 result,
                 st.session_state.segments,
-                language=(azure_transcriber.locale_summary(raw["chunks"])
+                language=(azure_transcriber.locale_summary(raw["response"])
                           if raw else None),
             )
             result["status"] = "transcribed"

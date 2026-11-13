@@ -49,7 +49,7 @@ from src.ffmpeg_client import (  # noqa: E402
     copy_from_container,
     copy_to_container,
     extract_audio,
-    extract_speech_audio_chunks,
+    extract_speech_audio,
     probe_duration,
     remove_container_path,
     trim_media,
@@ -131,25 +131,19 @@ def run_azure(
     try:
         config = azure_transcriber.load_config()
         run.detail = f"fast transcription / {config.language_label}"
+        c_speech = cdir / "speech.ogg"
         with _Timer(run, "extract"):
-            chunks = extract_speech_audio_chunks(
-                str(c_input), str(cdir / "speech"), chunk_seconds=config.max_chunk_seconds
-            )
+            extract_speech_audio(str(c_input), str(c_speech))
         with _Timer(run, "copy"):
-            host_chunks = [
-                (copy_from_container(c.path, work / "speech"), c.start) for c in chunks
-            ]
-        size_mb = sum(p.stat().st_size for p, _ in host_chunks) / 1_000_000
-        run.detail += f" / {len(host_chunks)} chunk(s), {size_mb:.1f} MB"
-        responses: list = []
-        try:
-            with _Timer(run, "transcribe"):
-                run.segments = azure_transcriber.transcribe_chunks(
-                    host_chunks, config=config, responses=responses
-                )
-        finally:
-            if responses:
-                run.raw_response = azure_transcriber.response_document(config, responses)
+            speech_path = copy_from_container(c_speech, work)
+        run.detail += f" / {speech_path.stat().st_size / 1_000_000:.1f} MB"
+        with _Timer(run, "transcribe"):
+            run.segments, response = azure_transcriber.transcribe_file(
+                speech_path, config=config
+            )
+        run.raw_response = azure_transcriber.response_document(
+            config, speech_path.name, response
+        )
     except Exception as exc:
         run.error = f"{type(exc).__name__}: {exc}"
         traceback.print_exc()

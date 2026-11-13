@@ -19,14 +19,12 @@ crashes.
 
 from __future__ import annotations
 
-import csv
 import io
 import logging
 import os
 import tarfile
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
@@ -351,34 +349,6 @@ def trim_media(container_input: str, container_output: str, seconds: float) -> N
         raise RuntimeError(f"ffmpeg trim failed (exit={exit_code}):\n{output}")
 
 
-@dataclass(frozen=True)
-class AudioChunk:
-    """One chunk of speech audio produced by :func:`extract_speech_audio_chunks`."""
-
-    path: PurePosixPath  # container-side path of the chunk file
-    start: float         # offset (seconds) of the chunk within the original audio
-
-
-def parse_segment_list(csv_text: str, chunk_dir: PurePosixPath) -> list[AudioChunk]:
-    """Parse the CSV written by ffmpeg's ``-segment_list_type csv``.
-
-    Each row is ``filename,start_time,end_time``.  Returns the chunks ordered
-    by start time with their paths resolved under *chunk_dir*.
-    """
-    chunks: list[AudioChunk] = []
-    for row in csv.reader(io.StringIO(csv_text)):
-        if len(row) < 2 or not row[0].strip():
-            continue
-        try:
-            start = float(row[1])
-        except ValueError as exc:
-            raise RuntimeError(f"Invalid ffmpeg segment list row: {row!r}") from exc
-        name = PurePosixPath(row[0].strip()).name
-        chunks.append(AudioChunk(path=PurePosixPath(chunk_dir) / name, start=start))
-    chunks.sort(key=lambda c: c.start)
-    return chunks
-
-
 # Audio sent to Azure: converted directly from the video (no intermediate
 # 44.1 kHz / stereo file).  Mono is required for diarization, and Azure
 # recognises at 16 kHz, so a higher rate would only make the upload bigger.
@@ -395,28 +365,17 @@ SPEECH_AUDIO_FORMAT = {
 }
 
 
-def extract_speech_audio_chunks(
+def extract_speech_audio(
     container_input: str,
-    container_output_dir: str,
+    container_output: str,
     *,
-    chunk_seconds: int,
     bitrate: str = SPEECH_AUDIO_BITRATE,
-) -> list[AudioChunk]:
-    """Extract compact speech audio for cloud transcription, split into chunks.
+) -> None:
+    """Extract compact speech audio for Azure into one file (no splitting).
 
     The first audio stream is re-encoded to mono 16 kHz Opus (OGG container),
-    which keeps an hour of speech at roughly 14 MB.  The output is split every
-    *chunk_seconds* with ffmpeg's segment muxer so that each file stays within
-    the per-file duration limit of the transcription API; short inputs produce
-    a single chunk.
+    about 15 MB per hour of speech.
     """
-    out_dir = PurePosixPath(container_output_dir)
-    list_path = out_dir / "chunks.csv"
-
-    exit_code, output = _exec(["mkdir", "-p", str(out_dir)])
-    if exit_code != 0:
-        raise RuntimeError(f"Failed to create {out_dir} in container: {output}")
-
     cmd = [
         "ffmpeg",
         "-y",
@@ -428,27 +387,13 @@ def extract_speech_audio_chunks(
         "-c:a", "libopus",
         "-b:a", bitrate,
         "-application", "voip",
-        "-f", "segment",
-        "-segment_time", str(int(chunk_seconds)),
-        "-reset_timestamps", "1",
-        "-segment_list", str(list_path),
-        "-segment_list_type", "csv",
-        str(out_dir / "chunk_%03d.ogg"),
+        container_output,
     ]
     exit_code, output = _exec(cmd)
     if exit_code != 0:
         raise RuntimeError(
             f"ffmpeg audio extraction failed (exit={exit_code}):\n{output}"
         )
-
-    exit_code, output = _exec(["cat", str(list_path)])
-    if exit_code != 0:
-        raise RuntimeError(f"Could not read ffmpeg segment list {list_path}: {output}")
-
-    chunks = parse_segment_list(output, out_dir)
-    if not chunks:
-        raise RuntimeError("ffmpeg audio extraction produced no audio chunks")
-    return chunks
 
 
 def burn_subtitles(

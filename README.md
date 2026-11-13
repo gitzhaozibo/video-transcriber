@@ -130,16 +130,13 @@ AZURE_SPEECH_ENDPOINT=https://<リソース名>.cognitiveservices.azure.com
 
 - 音声は FFmpeg コンテナでモノラル 16kHz・Opus 32kbps（約 14MB/時間）に変換してから送信するため、
   動画ファイルが 1GB を超えていても API の上限（1 ファイル 500MB 未満・5 時間未満）に収まります。
-- 長時間の音声は `AZURE_MAX_CHUNK_SECONDS`（既定 4 時間）ごとに分割して送信し、タイムスタンプを補正して結合します。
-- 言語は `AZURE_SPEECH_LOCALES`（既定: 日本語・英語・中国語・ドイツ語）の中から自動判定します。
-  判定はファイル（チャンク）ごとに主要な 1 言語です。
-  1 本の中で言語が切り替わる動画（日本語の会議で一部だけ英語など）は、`AZURE_SPEECH_LOCALES=multilingual` にすると
-  多言語モデル（`locales: []`）で話された言語ごとに文字起こしします（ja-JP / en-US / zh-CN / de-DE を含む 15 言語に対応）。
+- 音声は分割せず、1 ファイルを 1 回のリクエストで送信します。API の上限（1 ファイル 5 時間未満）を超える 5 時間以上の動画は、送信前にエラーにします。
+- 言語は日本語・英語・中国語・ドイツ語（`ja-JP` / `en-US` / `zh-CN` / `de-DE`、固定）の中から、主要な 1 言語を自動判定します。
 - 社名・人名・製品名などは `AZURE_PHRASE_LIST`（カンマ区切り）に登録すると認識されやすくなります（フレーズリスト）。
 - 判定された言語は `result.json` の `transcription.language` に、発話時間の長い順で記録され、結果画面にも表示されます。
 - 話者識別（diarization）を既定で有効にし、各セグメントに `speaker`（API が返す整数）を付けます。`AZURE_DIARIZATION=false` で無効化、`AZURE_MAX_SPEAKERS`（2〜35、既定 4）で想定する最大話者数を指定します。
-  話者番号はリクエスト（音声チャンク）ごとに振られるため、`AZURE_MAX_CHUNK_SECONDS` を超える長さの音声では、チャンクをまたいで同じ番号が同じ人物とは限りません。
-- 長い発話は単語タイムスタンプを使って `AZURE_MAX_SEGMENT_SECONDS`（既定 10 秒）以内に分割し、字幕向けのセグメントにします。
+  Fast Transcription API で指定できるのは最大話者数だけで、最小話者数の設定はありません。
+- Azure が返す発話（phrase）1 件を、そのまま 1 セグメントにします（長い発話の分割はしません）。
 - Azure の設定が不足している状態で Azure を選ぶと、画面にエラーを表示し、文字起こしボタンを無効にします（Whisper へは自動で切り替わりません）。
 - 音声は Azure に送信され、利用量に応じて課金されます。
 
@@ -163,14 +160,10 @@ streamlit run app.py
 | `AZURE_SPEECH_KEY` | （なし） | Azure Speech リソースのキー（`azure` 時は必須） |
 | `AZURE_SPEECH_ENDPOINT` | （なし） | 例: `https://<リソース名>.cognitiveservices.azure.com`。未設定なら `AZURE_SPEECH_REGION` から生成 |
 | `AZURE_SPEECH_REGION` | （なし） | 例: `japaneast`（`AZURE_SPEECH_ENDPOINT` 未設定時に使用） |
-| `AZURE_SPEECH_LOCALES` | `ja-JP,en-US,zh-CN,de-DE` | 言語自動判定の候補（カンマ区切り）。`multilingual` で多言語モード（途中で言語が切り替わる音声向け） |
 | `AZURE_PHRASE_LIST` | （なし） | 認識させたい固有名詞・専門用語（カンマ区切り） |
-| `AZURE_PHRASE_LIST_WEIGHT` | （なし） | フレーズリストの重み（0.0〜2.0、未設定ならサービス既定） |
 | `AZURE_DIARIZATION` | `true` | Azure の話者識別。有効時は各セグメントに `speaker` を付与（Whisper は常に `null`） |
-| `AZURE_MAX_SPEAKERS` | `4` | 話者識別で想定する最大話者数（2〜35） |
-| `AZURE_MAX_SEGMENT_SECONDS` | `10` | これより長い発話を単語境界で分割（`0` で分割しない） |
-| `AZURE_MAX_CHUNK_SECONDS` | `14400` (4h) | 1 リクエストで送る音声の最大長（5 時間未満） |
-| `AZURE_REQUEST_TIMEOUT` | `3600` | 1 リクエストあたりの応答待ちタイムアウト秒数 |
+| `AZURE_MAX_SPEAKERS` | `4` | 話者識別で想定する最大話者数（2〜35）。最小話者数は指定できません |
+| `AZURE_REQUEST_TIMEOUT` | `3600` | 応答待ちのタイムアウト秒数 |
 | `KEEP_TEMP_FILES` | （なし） | `1` / `true` を設定すると、完了・異常終了時にホスト・コンテナ両方の temp フォルダを削除しない（テスト実行用） |
 | `EXEC_TIMEOUT` | `21600` (6h) | コンテナ内コマンド 1 回あたりのタイムアウト秒数 |
 | `SHARED_DIR` | `shared` | ホスト側共有ディレクトリ |
@@ -192,7 +185,7 @@ streamlit run app.py
 | `transcript.json` | 文字起こし結果のセグメント配列 |
 | `translation.json` | 翻訳結果のセグメント配列（翻訳した場合のみ） |
 | `subtitles.json` | 動画に焼き込んだ字幕のセグメント配列（焼き込み後のみ） |
-| `azure_response.json` | Azure Fast Transcription API のレスポンス（`response.json()`）をそのまま保存したもの（Azure 実行時のみ）。音声チャンクごとに `{"file", "start_seconds", "response"}` が入り、送信した `definition`（候補言語・話者識別設定）も含みます。`response` 内の `offsetMilliseconds` はチャンク先頭からの時刻なので、動画上の時刻は `start_seconds` を足して求めます。後続のチャンクが失敗した場合も、成功したチャンクの分は保存されます |
+| `azure_response.json` | Azure Fast Transcription API のレスポンス（`response.json()`）をそのまま保存したもの（Azure 実行時のみ）。送信した音声ファイル名（`file`）と `definition`（候補言語・話者識別設定）も含みます。`response` 内の `offsetMilliseconds` は、そのまま動画上の時刻です |
 
 セグメント配列は Whisper・Azure 共通で次の形式です（`speaker` は Azure の話者識別結果、Whisper では `null`）:
 
@@ -222,7 +215,7 @@ streamlit run app.py
   "updated_at": "2026-11-11T07:31:12+00:00",
   "input": { "filename": "sample.mp4", "size_bytes": 123456789, "duration_seconds": 61.2 },
   "engine": { "name": "azure", "api_version": "2025-10-15", "locales": ["ja-JP", "en-US", "zh-CN", "de-DE"], "diarization": true, "max_speakers": 4,
-              "audio_chunks": [{ "file": "chunk_000.ogg", "start_seconds": 0.0, "size_bytes": 245760 }] },
+              "audio_file": { "file": "sample_speech.ogg", "size_bytes": 245760 } },
   "steps": [ { "step": "upload", "elapsed_seconds": 1.2, "success": true, "error": null }, … ],
   "transcription": { "segment_count": 12, "text": "…", "segments": [ { "speaker": 1, "start": 0.5, "end": 2.0, "text": "…" } ] },
   "translation": { "status": "skipped", "model": null, "target_language": null, "message": "OPENAI_API_KEY is not set…", "segments": null },

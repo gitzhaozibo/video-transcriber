@@ -140,9 +140,8 @@ class TestSaveResult:
     def test_azure_raw_response_file(self, tmp_path: Path) -> None:
         res = _result()
         results.set_transcription(res, [Segment(0, 1, "a", speaker=1)])
-        raw = {"api_version": "2025-10-15",
-               "chunks": [{"file": "chunk_000.ogg", "start_seconds": 0.0,
-                           "response": {"durationMilliseconds": 1000, "phrases": []}}]}
+        raw = {"api_version": "2025-10-15", "file": "in_speech.ogg",
+               "response": {"durationMilliseconds": 1000, "phrases": []}}
         results.set_raw_response(res, raw)
         job_folder = tmp_path / "job"
         folder = results.save_result(res, tmp_path / "results", job_folder=job_folder)

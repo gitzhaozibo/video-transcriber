@@ -60,7 +60,7 @@ class TestUploadFlow:
 
 _AZURE_ENV = ("TRANSCRIBE_ENGINE", "AZURE_SPEECH_KEY", "AZURE_SPEECH_ENDPOINT",
               "AZURE_SPEECH_REGION", "AZURE_SPEECH_LOCALES", "AZURE_PHRASE_LIST",
-              "AZURE_PHRASE_LIST_WEIGHT")
+              "AZURE_PHRASE_LIST_WEIGHT", "AZURE_MAX_CHUNK_SECONDS")
 
 
 @pytest.fixture
@@ -124,7 +124,6 @@ class TestResultJson:
     def test_azure_job_saves_result_json(self, clean_engine_env, tmp_path: Path) -> None:
         import json
 
-        from src.ffmpeg_client import AudioChunk
         from src.subtitle import Segment
 
         clean_engine_env.setenv("AZURE_SPEECH_KEY", "k")
@@ -142,10 +141,9 @@ class TestResultJson:
                     "phrases": [{"offsetMilliseconds": 500, "durationMilliseconds": 1500,
                                  "text": "こんにちは", "speaker": 1, "locale": "ja-JP"}]}
 
-        def fake_transcribe_chunks(chunks, *, config=None, responses=None):
-            responses.append({"file": "chunk_000.ogg", "start_seconds": 0.0,
-                              "response": raw_body})
-            return [Segment(0.5, 2.0, "こんにちは", speaker=1)]
+        def fake_transcribe_file(audio_path, *, config=None):
+            assert Path(audio_path).name == "sample_speech.ogg"
+            return [Segment(0.5, 2.0, "こんにちは", speaker=1)], raw_body
 
         def fake_copy_from(path, dest):
             dest.mkdir(parents=True, exist_ok=True)
@@ -161,12 +159,11 @@ class TestResultJson:
              patch("src.db.create_job"), patch("src.db.update_job"), \
              patch("src.ffmpeg_client.copy_to_container"), \
              patch("src.ffmpeg_client.probe_duration", return_value=12.5), \
-             patch("src.ffmpeg_client.extract_speech_audio_chunks",
-                   return_value=[AudioChunk(Path("/c/speech/chunk_000.ogg"), 0.0)]) as speech, \
+             patch("src.ffmpeg_client.extract_speech_audio") as speech, \
              patch("src.ffmpeg_client.extract_audio") as plain_extract, \
              patch("src.ffmpeg_client.copy_from_container", side_effect=fake_copy_from), \
-             patch("src.azure_transcriber.transcribe_chunks",
-                   side_effect=fake_transcribe_chunks):
+             patch("src.azure_transcriber.transcribe_file",
+                   side_effect=fake_transcribe_file):
             at = _make_app_test()
             at.run()
             at.radio(key="engine_choice").set_value("azure").run()
@@ -176,6 +173,7 @@ class TestResultJson:
         # Azure audio is converted straight from the uploaded video (one pass).
         speech.assert_called_once()
         assert speech.call_args.args[0].endswith("/sample.mp4")  # the video itself
+        assert speech.call_args.args[1].endswith("/sample_speech.ogg")  # one file
         plain_extract.assert_not_called()
         (folder,) = results_dir.iterdir()
         data = json.loads((folder / "result.json").read_text(encoding="utf-8"))
@@ -188,7 +186,8 @@ class TestResultJson:
                                  "duration_seconds": 12.5}
         assert data["engine"]["name"] == "azure"
         assert data["engine"]["locales"] == ["ja-JP", "en-US", "zh-CN", "de-DE"]
-        assert data["engine"]["audio_chunks"][0]["file"] == "chunk_000.ogg"
+        assert data["engine"]["audio_file"] == {"file": "sample_speech.ogg",
+                                                "size_bytes": 3}
         assert "k" not in json.dumps(data["engine"]).split('"')  # key never stored
         assert data["transcription"]["segments"] == [
             {"speaker": 1, "start": 0.5, "end": 2.0, "text": "こんにちは"}
@@ -203,7 +202,6 @@ class TestResultJson:
         assert json.loads((job_folder / "result.json").read_text(encoding="utf-8")) == data
         assert (job_folder / "transcript.json").exists()
         assert data["engine"]["raw_response_file"] == "azure_response.json"
-        assert data["engine"]["language_mode"] == "identification"
         assert data["engine"]["phrase_list"] == []
         assert data["transcription"]["language"] == {
             "locale": "ja-JP",
@@ -213,8 +211,8 @@ class TestResultJson:
         assert "_azure_response" not in data
         for f in (folder, job_folder):
             raw = json.loads((f / "azure_response.json").read_text(encoding="utf-8"))
-            assert raw["chunks"] == [{"file": "chunk_000.ogg", "start_seconds": 0.0,
-                                      "response": raw_body}]
+            assert raw["file"] == "sample_speech.ogg"
+            assert raw["response"] == raw_body
             assert raw["definition"]["locales"] == ["ja-JP", "en-US", "zh-CN", "de-DE"]
         steps = [s["step"] for s in data["steps"]]
         assert steps[:5] == ["upload", "copy_to_container", "probe_duration",
@@ -244,6 +242,38 @@ class TestResultJson:
         assert data["engine"]["name"] == "whisper"
         assert data["error"] == {"step": "copy_to_container",
                                  "message": "Docker daemon is unreachable"}
+
+    def test_azure_rejects_videos_of_5_hours_or_more(
+        self, clean_engine_env, tmp_path: Path
+    ) -> None:
+        import json
+
+        clean_engine_env.setenv("AZURE_SPEECH_KEY", "k")
+        clean_engine_env.setenv("AZURE_SPEECH_REGION", "japaneast")
+        results_dir = tmp_path / "results"
+        with patch("streamlit.file_uploader", return_value=_FakeUpload()), \
+             patch("src.results.RESULTS_DIR", results_dir), \
+             patch("src.jobs.job_dir", side_effect=lambda j: tmp_path), \
+             patch("src.jobs.cleanup_job"), \
+             patch("src.job_logger.get_logger", return_value=MagicMock()), \
+             patch("src.db.create_job"), patch("src.db.update_job"), \
+             patch("src.ffmpeg_client.copy_to_container"), \
+             patch("src.ffmpeg_client.probe_duration", return_value=5 * 3600.0), \
+             patch("src.ffmpeg_client.extract_speech_audio") as speech, \
+             patch("src.azure_transcriber.transcribe_file") as azure_call:
+            at = _make_app_test()
+            at.run()
+            at.radio(key="engine_choice").set_value("azure").run()
+            next(b for b in at.button if "Transcribe" in b.label).click().run()
+
+        assert not at.exception
+        speech.assert_not_called()
+        azure_call.assert_not_called()
+        (folder,) = results_dir.iterdir()
+        data = json.loads((folder / "result.json").read_text(encoding="utf-8"))
+        assert data["status"] == "failed"
+        assert data["error"]["step"] == "check_duration"
+        assert "5.0 hours" in data["error"]["message"]
 
     def test_whisper_job_has_null_speakers(self, clean_engine_env, tmp_path: Path) -> None:
         import json
