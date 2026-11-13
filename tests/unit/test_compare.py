@@ -17,7 +17,6 @@ from src.compare import (
     similarity,
     time_windows,
 )
-from src.ffmpeg_client import AudioChunk
 from src.subtitle import Segment
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -137,10 +136,8 @@ class TestScript:
         def fake_whisper(audio, **kwargs):
             yield Segment(0.0, 2.0, " 今日は晴れです。")
 
-        def fake_azure(chunks, *, config=None, responses=None):
-            responses.append({"file": "chunk_000.ogg", "start_seconds": 0.0,
-                              "response": {"phrases": []}})
-            return [Segment(0.1, 2.1, "今日は晴れです")]
+        def fake_azure(audio_path, *, config=None):
+            return [Segment(0.1, 2.1, "今日は晴れです")], {"phrases": []}
 
         fake_cfg = mod.azure_transcriber.AzureSpeechConfig(key="k", endpoint="https://e")
         with patch.object(mod, "container_job_dir", return_value=cdir), \
@@ -148,14 +145,13 @@ class TestScript:
              patch.object(mod, "probe_duration", side_effect=[600.0, 60.0]), \
              patch.object(mod, "trim_media") as trim, \
              patch.object(mod, "extract_audio"), \
-             patch.object(mod, "extract_speech_audio_chunks",
-                          return_value=[AudioChunk(cdir / "speech" / "chunk_000.ogg", 0.0)]), \
+             patch.object(mod, "extract_speech_audio"), \
              patch.object(mod, "copy_from_container", side_effect=fake_copy_from), \
              patch.object(mod, "remove_container_path") as remove, \
              patch.object(mod.whisper_transcriber, "_get_model"), \
              patch.object(mod.whisper_transcriber, "transcribe", side_effect=fake_whisper), \
              patch.object(mod.azure_transcriber, "load_config", return_value=fake_cfg), \
-             patch.object(mod.azure_transcriber, "transcribe_chunks", side_effect=fake_azure):
+             patch.object(mod.azure_transcriber, "transcribe_file", side_effect=fake_azure):
             code = mod.main([str(video), "--clip-seconds", "60", "--out", str(tmp_path / "out")])
 
         assert code == 0
@@ -167,7 +163,8 @@ class TestScript:
             "results.json", "report.html", "azure_response.json",
         }
         raw = json.loads((out_dir / "azure_response.json").read_text(encoding="utf-8"))
-        assert raw["chunks"][0]["response"] == {"phrases": []}
+        assert raw["file"] == "speech.ogg"
+        assert raw["response"] == {"phrases": []}
         results = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
         assert results["audio_duration_seconds"] == 60.0
         assert results["engine_agreement"] == pytest.approx(1.0)

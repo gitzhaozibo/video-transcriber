@@ -12,8 +12,8 @@ Files in each folder::
     transcript.json   transcription segments  [{"speaker", "start", "end", "text"}, ...]
     translation.json  translated segments     (only when translation succeeded)
     subtitles.json    segments burned into the video (only after burning)
-    azure_response.json  raw Azure fast transcription responses
-                      (``response.json()`` per audio chunk; Azure jobs only)
+    azure_response.json  raw Azure fast transcription response
+                      (``response.json()``; Azure jobs only)
 
 Schema of ``result.json`` (``schema_version`` 1)::
 

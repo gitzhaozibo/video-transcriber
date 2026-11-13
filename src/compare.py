@@ -33,7 +33,7 @@ class EngineRun:
     segments: list[Segment] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)  # stage -> seconds
     error: Optional[str] = None
-    raw_response: Optional[dict] = None  # Azure: response.json() per chunk
+    raw_response: Optional[dict] = None  # Azure: response.json() with settings
 
     @property
     def ok(self) -> bool:
